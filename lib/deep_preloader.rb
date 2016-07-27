@@ -1,20 +1,22 @@
 require "deep_preloader/version"
 require "deep_preloader/spec"
+require "deep_preloader/polymorphic_spec"
 require "active_record"
 
 module DeepPreloader
-  def self.preload(models, hash_spec)
-    spec = Spec.parse_hash_spec(hash_spec)
-    spec.preload(models)
+  def self.preload(models, spec)
+    return if spec.nil?
+    spec = AbstractSpec.parse_hash_spec(spec) unless spec.is_a?(AbstractSpec)
+    spec.preload(Array.wrap(models))
   end
 
   # Through associations associations not supported for now
-  def self.preload_association(models, association_reflection, child_spec)
+  def self.preload_association(models, association_reflection, child_preload_spec)
     unless association_reflection.is_a?(ActiveRecord::Reflection::AssociationReflection)
       raise "Unsupported reflection type #{association_reflection.class.name}"
     end
 
-    unless association_reflection.conditions.flatten.blank?
+    unless association_reflection.constraints.blank?
       raise ArgumentError.new("Preloading conditional associations not supported: #{association_reflection.name}")
     end
 
@@ -23,90 +25,96 @@ module DeepPreloader
     end
 
     if association_reflection.polymorphic?
-      preload_polymorphic_association(models, association_reflection, child_spec)
+      preload_polymorphic_association(models, association_reflection, child_preload_spec)
     else
       scope = association_reflection.klass.unscoped
       if association_reflection.options[:as]
-        scope = scope.where(association_reflection.type => klass.base_class.sti_name)
+        scope = scope.where(association_reflection.type => association_reflection.active_record.base_class.sti_name)
       end
-      preload_direct_association(models, association_reflection, scope, child_spec)
-    end
-  end
-
-  def self.preload_direct_association(models, association_reflection, scope, child_spec)
-    case association_reflection.macro
-    when :belongs_to
-      preload_belongs_to_association(models, association_reflection, scope, child_spec)
-    when :has_one
-      preload_has_one_association(models, association_reflection, scope, child_spec)
-    when :has_many
-      preload_has_many_association(models, association_reflection, scope, child_spec)
-    else
-      raise "Unsupported association type #{reflection_type}"
+      if association_reflection.collection?
+        preload_multiple_association(models, association_reflection, scope, child_preload_spec)
+      else
+        preload_single_association(models, association_reflection, scope, child_preload_spec)
+      end
     end
   end
 
   # belongs_to: polymorphic: group the models by the foreign_type, look up each grouping as normal.
-  def self.preload_polymorphic_association(models, association_reflection, child_spec)
+  def self.preload_polymorphic_association(models, association_reflection, child_preload_spec)
     assoc_name = association_reflection.name
-    models_by_klass = models.group_by { |m| m.association(assoc_name).klass }
-    models_by_klass.each do |klass, klass_models|
-      scope = klass.unscoped
-      preload_belongs_to_association(klass_models, association_reflection, scope, child_spec)
+    models_by_child_class = models.group_by { |m| m.association(assoc_name).klass }
+    models_by_child_class.each do |child_class, child_class_models|
+      next if child_class.nil?
+      child_scope = child_class.unscoped
+      child_class_preload_spec = child_preload_spec.try { |s| s.for_type(child_class) }
+      preload_single_association(child_class_models, association_reflection, child_scope, child_class_preload_spec)
     end
   end
 
-  def self.preload_belongs_to_association(models, association_reflection, scope, child_spec)
-    fk = association_reflection.foreign_key
-    pk = association_reflection.active_record_primary_key
+  def self.preload_single_association(models, association_reflection, child_scope, child_preload_spec)
+    assoc_name = association_reflection.name
+    case association_reflection.macro
+    when :belongs_to
+      parent_key = association_reflection.foreign_key
+      child_key  = association_reflection.active_record_primary_key
+    when :has_one
+      parent_key = association_reflection.active_record_primary_key
+      child_key  = association_reflection.foreign_key
+    else
+      raise "Unsupported association type #{reflection_type}"
+    end
 
-    fk_ids = models.map { |m| m.read_attribute(fk) }.uniq
-    children = scope.where(pk => fk_ids).to_a
+    # some models may have the association already loaded
+    loaded_models, unloaded_models = models.partition { |m| m.association(assoc_name).loaded? }
 
-    child_spec.preload(children) if child_spec.present?
+    loaded_children = loaded_models.map { |m| m.association(assoc_name).target }
+    children_by_key = loaded_children.index_by { |c| c.read_attribute(child_key) }
 
-    children_by_id = children.index_by(&:id)
+    # Load children necessary to resolve unloaded models
+    unloaded_keys = unloaded_models
+                    .map { |m| m.read_attribute(parent_key) }
+                    .uniq
+                    .reject { |k| children_by_key.has_key?(k) }
 
-    models.each do |m|
-      target = children_by_id[m.read_attribute(fk)]
+    unloaded_children = child_scope.where(child_key => unloaded_keys).to_a
+    unloaded_children.each do |c|
+      children_by_key[c.read_attribute(child_key)] = c
+    end
+
+    child_preload_spec.preload(children_by_key.values) if child_preload_spec.present?
+
+    unloaded_models.each do |m|
+      target = children_by_key[m.read_attribute(parent_key)]
       association = m.association(association_reflection.name)
       association.target = target
       association.set_inverse_instance(target) if target
     end
   end
 
-  def self.preload_has_one_association(models, association_reflection, scope, child_spec)
-    fk = association_reflection.foreign_key
-    pk = association_reflection.active_record_primary_key
+  def self.preload_multiple_association(models, association_reflection, child_scope, child_preload_spec)
+    assoc_name = association_reflection.name
 
-    pk_ids = models.map { |m| m.read_attribute(pk) }
-    children = scope.where(fk => pk_ids).uniq.to_a
-
-    child_spec.preload(children) if child_spec.present?
-
-    children_by_fk = children.index_by { |rel| rel.read_attribute(fk) }
-
-    models.each do |m|
-      target = children_by_fk[m.id]
-      association = m.association(association_reflection.name)
-      association.target = target
-      association.set_inverse_instance(target) if target
+    unless association_reflection.macro == :has_many
+      raise "Unsupported association type #{reflection_type}"
     end
-  end
 
-  def self.preload_has_many_association(models, association_reflection, scope, child_spec)
-    fk = association_reflection.foreign_key
-    pk = association_reflection.active_record_primary_key
+    parent_key = association_reflection.active_record_primary_key
+    child_key  = association_reflection.foreign_key
 
-    pk_ids = models.map { |m| m.read_attribute(pk) }
-    children = scope.where(fk => pk_ids).to_a
+    # some models may have the association already loaded
+    loaded_models, unloaded_models = models.partition { |m| m.association(assoc_name).loaded? }
+    loaded_children = loaded_models.flat_map { |m| m.association(assoc_name).target }
 
-    child_spec.preload(children) if child_spec.present?
+    # Load children necessary to resolve unloaded models
+    unloaded_keys = unloaded_models.map { |m| m.read_attribute(parent_key) }
 
-    children_by_fk = children.group_by { |rel| rel.read_attribute(fk) }
+    unloaded_children = child_scope.where(child_key => unloaded_keys).to_a
+    unloaded_children_by_key = unloaded_children.group_by { |c| c.read_attribute(child_key) }
 
-    models.each do |m|
-      targets = children_by_fk.fetch(m.id, [])
+    child_preload_spec.preload(loaded_children + unloaded_children) if child_preload_spec.present?
+
+    unloaded_models.each do |m|
+      targets = unloaded_children_by_key.fetch(m.read_attribute(parent_key), [])
       association = m.association(association_reflection.name)
       association.loaded!
       association.target = targets

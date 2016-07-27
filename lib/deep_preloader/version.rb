@@ -1,3 +1,3 @@
-class DeepPreloader
+module DeepPreloader
   VERSION = "0.1.0"
 end
