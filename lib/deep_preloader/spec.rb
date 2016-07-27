@@ -8,6 +8,8 @@ class DeepPreloader::Spec < DeepPreloader::AbstractSpec
   end
 
   def preload(models)
+    return if models.blank?
+
     model_class = models.first.class
     unless models.all? { |m| m.class == model_class }
       raise ArgumentError.new("Cannot preload mixed type models")

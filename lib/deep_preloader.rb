@@ -74,14 +74,18 @@ module DeepPreloader
     unloaded_keys = unloaded_models
                     .map { |m| m.read_attribute(parent_key) }
                     .uniq
+                    .compact
                     .reject { |k| children_by_key.has_key?(k) }
 
-    unloaded_children = child_scope.where(child_key => unloaded_keys).to_a
-    unloaded_children.each do |c|
-      children_by_key[c.read_attribute(child_key)] = c
+    if unloaded_keys.present?
+      child_scope.where(child_key => unloaded_keys).each do |c|
+        children_by_key[c.read_attribute(child_key)] = c
+      end
     end
 
-    child_preload_spec.preload(children_by_key.values) if child_preload_spec.present?
+    if child_preload_spec.present? && children_by_key.present?
+      child_preload_spec.preload(children_by_key.values)
+    end
 
     unloaded_models.each do |m|
       target = children_by_key[m.read_attribute(parent_key)]
@@ -111,7 +115,10 @@ module DeepPreloader
     unloaded_children = child_scope.where(child_key => unloaded_keys).to_a
     unloaded_children_by_key = unloaded_children.group_by { |c| c.read_attribute(child_key) }
 
-    child_preload_spec.preload(loaded_children + unloaded_children) if child_preload_spec.present?
+    preload_children = loaded_children + unloaded_children
+    if child_preload_spec.present? && preload_children.present?
+      child_preload_spec.preload(preload_children)
+    end
 
     unloaded_models.each do |m|
       targets = unloaded_children_by_key.fetch(m.read_attribute(parent_key), [])
