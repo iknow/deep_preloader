@@ -47,4 +47,8 @@ class DeepPreloader::PolymorphicSpec < DeepPreloader::AbstractSpec
   end
 
   alias eql? ==
+
+  def inspect
+    "PolySpec#{specs_by_type.inspect}"
+  end
 end

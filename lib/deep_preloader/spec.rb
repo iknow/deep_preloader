@@ -46,4 +46,8 @@ class DeepPreloader::Spec < DeepPreloader::AbstractSpec
   end
 
   alias eql? ==
+
+  def inspect
+    "Spec#{association_specs.inspect}"
+  end
 end
