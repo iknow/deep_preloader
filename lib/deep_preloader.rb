@@ -67,7 +67,7 @@ module DeepPreloader
     # some models may have the association already loaded
     loaded_models, unloaded_models = models.partition { |m| m.association(assoc_name).loaded? }
 
-    loaded_children = loaded_models.map { |m| m.association(assoc_name).target }
+    loaded_children = loaded_models.map { |m| m.association(assoc_name).target }.compact
     children_by_key = loaded_children.index_by { |c| c.read_attribute(child_key) }
 
     # Load children necessary to resolve unloaded models

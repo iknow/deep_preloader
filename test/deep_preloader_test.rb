@@ -140,17 +140,29 @@ class DeepPreloaderTest < ActiveSupport::TestCase
     end
 
     p1, p2 = (1..2).map { Parent.create!(child: Child.new) }
+    p3, p4 = (1..2).map { Parent.create!(child: nil) }
     c1_oid = p1.child.object_id
     c2_oid = p2.child.object_id
     p2.reload
+    p4.reload
 
-    assert(p1.association(:child).loaded?)
-    refute(p2.association(:child).loaded?)
+    [p1, p3].each do |p|
+      assert_predicate(p.association(:child), :loaded?)
+    end
+    [p2, p4].each do |p|
+      refute_predicate(p.association(:child), :loaded?)
+    end
 
-    DeepPreloader.preload([p1, p2], :child)
-    assert(p1.association(:child).loaded?)
+    DeepPreloader.preload([p1, p2, p3, p4], :child)
+
+    [p1, p2, p3, p4].each do |p|
+      assert_predicate(p.association(:child), :loaded?)
+    end
+
     assert_equal(c1_oid, p1.association(:child).target.object_id)
     refute_equal(c2_oid, p2.association(:child).target.object_id)
+    assert_nil(p3.association(:child).target)
+    assert_nil(p4.association(:child).target)
   end
 
   def test_already_loaded_multiple
