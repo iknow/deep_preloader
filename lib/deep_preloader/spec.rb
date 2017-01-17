@@ -3,6 +3,28 @@ require 'deep_preloader/abstract_spec'
 class DeepPreloader::Spec < DeepPreloader::AbstractSpec
   attr_reader :association_specs
 
+  def self.parse(data)
+    case data
+    when Array
+      data.inject(self.new) do |acc, v|
+        acc.merge!(parse(v))
+      end
+    when Hash
+      assoc_specs = data.each_with_object({}) do |(k, v), h|
+        h[k.to_sym] = parse(v)
+      end
+      self.new(assoc_specs)
+    when String, Symbol
+      self.new({ data.to_sym => nil })
+    when DeepPreloader::AbstractSpec
+      data
+    when nil
+      nil
+    else
+      raise ArgumentError.new("Cannot parse invalid hash preload spec: #{hash.inspect}")
+    end
+  end
+
   def initialize(association_specs = {})
     @association_specs = association_specs
   end

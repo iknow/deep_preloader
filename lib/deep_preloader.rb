@@ -6,7 +6,7 @@ require "active_record"
 module DeepPreloader
   def self.preload(models, spec)
     return if spec.nil?
-    spec = AbstractSpec.parse_hash_spec(spec) unless spec.is_a?(AbstractSpec)
+    spec = Spec.parse(spec) unless spec.is_a?(AbstractSpec)
     spec.preload(Array.wrap(models))
   end
 
