@@ -6,10 +6,7 @@ class DeepPreloader::PolymorphicSpec < DeepPreloader::AbstractSpec
   def self.parse(data)
     if data.is_a?(Hash)
       specs = data.each_with_object({}) do |(k, v), h|
-        unless k < ActiveRecord::Base
-          raise ArgumentError.new("Invalid polymorphic spec: '#{k.inspect}' is not a model class")
-        end
-        h[k] = DeepPreloader::Spec.parse(v)
+        h[k.to_s] = DeepPreloader::Spec.parse(v)
       end
       self.new(specs)
     else
