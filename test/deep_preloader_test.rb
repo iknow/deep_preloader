@@ -26,9 +26,9 @@ class DeepPreloaderTest < ActiveSupport::TestCase
   def test_parse_polymorphic_hash_spec
     create_test_model(:model, ->(t){}){}
 
-    parsed_spec   = DeepPreloader::Spec.parse(a: DeepPreloader::PolymorphicSpec.parse(Model => { b: :c }))
+    parsed_spec   = DeepPreloader::Spec.parse(a: DeepPreloader::PolymorphicSpec.parse("Model" => { b: :c }))
 
-    expected_spec = DeepPreloader::Spec.new(a: DeepPreloader::PolymorphicSpec.new(Model => DeepPreloader::Spec.new(b: DeepPreloader::Spec.new(c: nil))))
+    expected_spec = DeepPreloader::Spec.new(a: DeepPreloader::PolymorphicSpec.new("Model" => DeepPreloader::Spec.new(b: DeepPreloader::Spec.new(c: nil))))
 
     assert_equal(expected_spec, parsed_spec)
   end
