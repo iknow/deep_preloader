@@ -6,11 +6,12 @@ require 'deep_preloader/version'
 Gem::Specification.new do |spec|
   spec.name          = "deep_preloader"
   spec.version       = DeepPreloader::VERSION
-  spec.authors       = ["Chris Andreae"]
-  spec.email         = ["chris@bibo.com.ph"]
+  spec.authors       = ["iKnow Team"]
+  spec.email         = ["dev@iknow.jp"]
 
   spec.summary       = %q{Explicit preloader for ActiveRecord}
   spec.homepage      = "http://github.com/iknow/deep_preloader"
+  spec.license       = "MIT"
 
   # Prevent pushing this gem to RubyGems.org by setting 'allowed_push_host', or
   # delete this section to allow pushing this gem to any host.
