@@ -3,129 +3,268 @@ require "deep_preloader/spec"
 require "deep_preloader/polymorphic_spec"
 require "active_record"
 
-module DeepPreloader
-  def self.preload(models, spec)
-    return if spec.nil?
+DEBUG = ENV['DEBUG'].present?
+
+class DeepPreloader
+  def self.preload(models, spec, lock: nil)
+    return if spec.nil? || models.blank?
+
+    worker = PreloadWorker.new(lock: lock)
     spec = Spec.parse(spec) unless spec.is_a?(AbstractSpec)
-    spec.preload(Array.wrap(models))
+
+    models_by_class = Array.wrap(models).group_by(&:class)
+
+    case spec
+    when Spec
+      unless models_by_class.size == 1
+        raise ArgumentError.new("Provided multiple model types to non-polymorphic preload spec")
+      end
+
+      model_class, models = models_by_class.first
+      worker.add_associations_from_spec(models, model_class, spec)
+    when PolymorphicSpec
+      models_by_class.each do |model_class, models|
+        model_spec = spec.for_type(model_class)
+        next unless model_spec
+        worker.add_associations_from_spec(models, model_class, model_spec)
+      end
+    end
+
+    worker.run!
+    models
   end
 
-  # Through associations associations not supported for now
-  def self.preload_association(models, association_reflection, child_preload_spec)
-    unless association_reflection.is_a?(ActiveRecord::Reflection::AssociationReflection)
-      raise "Unsupported reflection type #{association_reflection.class.name}"
+  class PreloadWorker
+    def initialize(lock:)
+      @lock     = lock
+      @worklist = {}
     end
 
-    unless association_reflection.constraints.blank?
-      raise ArgumentError.new("Preloading conditional associations not supported: #{association_reflection.name}")
+    def add_associations_from_spec(models, model_class, spec)
+      spec.association_specs.each do |association_name, child_spec|
+        association_reflection = model_class.reflect_on_association(association_name)
+        if association_reflection.nil?
+          raise ArgumentError.new("Preloading error: couldn't find association #{association_name} on model class #{model_class.name}")
+        end
+
+        if association_reflection.polymorphic?
+          add_polymorphic_association(models, association_reflection, child_spec)
+        else
+          add_association(models, association_reflection, child_spec)
+        end
+      end
     end
 
-    unless association_reflection.scope.blank?
-      raise ArgumentError.new("Preloading scoped associations not supported: #{association_reflection.name}")
+    def run!
+      while(@worklist.present?)
+        context, entries = @worklist.shift
+        ActiveRecord::Base.logger.debug("Preloading children in context #{context}") if DEBUG
+
+        loaded_entries, unloaded_entries = entries.partition(&:loaded?)
+
+        unloaded_keys = unloaded_entries.map(&:key).to_set.delete(nil)
+
+        ActiveRecord::Base.logger.debug("Need to load children for following keys: #{unloaded_keys.to_a}") if DEBUG
+
+        found_children = {}
+
+        if unloaded_keys.present?
+          # When :belongs_to, children could be shared with already loaded
+          # entries - use what we already have.
+          loaded_entries.each do |entry|
+            next unless entry.belongs_to?
+
+            if entry.belongs_to? && unloaded_keys.delete?(entry.key)
+              found_children[entry.key] = entry.children
+            end
+          end
+          ActiveRecord::Base.logger.debug("found loaded children for keys #{found_children.keys}") if DEBUG
+        end
+
+        if unloaded_keys.present?
+          fetched_children = context.load_children(unloaded_keys.to_a, lock: @lock)
+          ActiveRecord::Base.logger.debug("fetched children for keys #{fetched_children.keys}") if DEBUG
+          found_children.merge!(fetched_children)
+        end
+
+        unloaded_entries.each do |entry|
+          children = found_children.fetch(entry.key, [])
+          entry.children = children
+        end
+
+        entries.each do |entry|
+          children = entry.children
+          child_spec = entry.child_spec
+          next unless child_spec && children.present?
+          child_class = children.first.class # children of a given parent are all of the same type
+          add_associations_from_spec(children, child_class, child_spec)
+        end
+
+      end
+
     end
 
-    if association_reflection.polymorphic?
-      preload_polymorphic_association(models, association_reflection, child_preload_spec)
-    else
-      scope = association_reflection.klass.unscoped
+    private
+
+    def add_polymorphic_association(models, association_reflection, polymorphic_child_spec)
+      assoc_name = association_reflection.name
+
+      # If a model belongs_to a polymorphic child, we know what type it is.
+      # Group models by the type of their associated child and add each
+      # separately.
+      models_by_child_class = models.group_by { |m| m.association(assoc_name).klass }
+
+      # For models with no child there's nothing to preload, but we still need
+      # to set the association target. Since we can't infer a class for
+      # `add_association`, set it up here.
+      models_by_child_class.delete(nil)&.each do |model|
+        model.association(assoc_name).loaded!
+      end
+
+      models_by_child_class.each do |child_class, child_class_models|
+        child_preload_spec = polymorphic_child_spec&.for_type(child_class)
+        add_association(child_class_models, association_reflection, child_preload_spec, type: child_class)
+      end
+    end
+
+    def add_association(models, association_reflection, child_preload_spec, type: association_reflection.klass)
+      key_col           = child_key_column(association_reflection)
+      child_constraints = child_constraints(association_reflection)
+
+      context = WorklistContext.new(type, key_col, child_constraints)
+      models.each do |model|
+        entry = WorklistEntry.new(model, association_reflection, child_preload_spec)
+        worklist_add(context, entry)
+      end
+    end
+
+    def worklist_add(key, entry)
+      (@worklist[key] ||= []) << entry
+    end
+
+    def child_constraints(association_reflection)
+      constraints = []
       if association_reflection.options[:as]
-        scope = scope.where(association_reflection.type => association_reflection.active_record.base_class.sti_name)
+        # each parent model is pointed to from a child type that could also belong to other types of parent. Constrain the search to this parent.
+        constraints << [association_reflection.type, association_reflection.active_record.base_class.sti_name]
       end
-      if association_reflection.collection?
-        preload_multiple_association(models, association_reflection, scope, child_preload_spec)
+
+      unless association_reflection.constraints.blank?
+        raise ArgumentError.new("Preloading conditional associations not supported: #{association_reflection.name}")
+      end
+
+      unless association_reflection.scope.blank?
+        raise ArgumentError.new("Preloading scoped associations not supported: #{association_reflection.name}")
+      end
+
+      constraints
+    end
+
+    def child_key_column(association_reflection)
+      case association_reflection.macro
+      when :belongs_to
+        association_reflection.active_record_primary_key
+      when :has_one, :has_many
+        association_reflection.foreign_key
       else
-        preload_single_association(models, association_reflection, scope, child_preload_spec)
+        raise "Unsupported association type #{association_reflection.macro}"
       end
     end
   end
 
-  # belongs_to: polymorphic: group the models by the foreign_type, look up each grouping as normal.
-  def self.preload_polymorphic_association(models, association_reflection, child_preload_spec)
-    assoc_name = association_reflection.name
-    models_by_child_class = models.group_by { |m| m.association(assoc_name).klass }
-    models_by_child_class.each do |child_class, child_class_models|
-      next if child_class.nil?
-      child_scope = child_class.unscoped
-      child_class_preload_spec = child_preload_spec.try { |s| s.for_type(child_class) }
-      preload_single_association(child_class_models, association_reflection, child_scope, child_class_preload_spec)
+  # entries need to be grouped by:
+  # child_type - look up in same table
+  # child_key  - compare the same keys
+  # child_search_constraints - where constraints on child lookup such as polymorphic type or association scope.
+  WorklistContext = Struct.new(:child_type, :child_key_column, :child_constraints) do
+    def load_children(keys, lock: nil)
+      scope = child_constraints.inject(child_type.unscoped) do |sc, (col, val)|
+        sc.where(col => val)
+      end
+
+      if lock
+        scope = scope.lock(lock)
+      end
+
+      scope.where(child_key_column => keys).group_by { |c| c.read_attribute(child_key_column) }
     end
   end
 
-  def self.preload_single_association(models, association_reflection, child_scope, child_preload_spec)
-    assoc_name = association_reflection.name
-    case association_reflection.macro
-    when :belongs_to
-      parent_key = association_reflection.foreign_key
-      child_key  = association_reflection.active_record_primary_key
-    when :has_one
-      parent_key = association_reflection.active_record_primary_key
-      child_key  = association_reflection.foreign_key
-    else
-      raise "Unsupported association type #{reflection_type}"
+  class WorklistEntry
+    attr_reader :model, :association_reflection, :child_spec
+
+    def initialize(model, association_reflection, child_spec)
+      @model = model
+      @association_reflection = association_reflection
+      @child_spec = child_spec
     end
 
-    # some models may have the association already loaded
-    loaded_models, unloaded_models = models.partition { |m| m.association(assoc_name).loaded? }
+    def association_name
+      @association_reflection.name
+    end
 
-    loaded_children = loaded_models.map { |m| m.association(assoc_name).target }.compact
-    children_by_key = loaded_children.index_by { |c| c.read_attribute(child_key) }
+    def association_macro
+      @association_reflection.macro
+    end
 
-    # Load children necessary to resolve unloaded models
-    unloaded_keys = unloaded_models
-                    .map { |m| m.read_attribute(parent_key) }
-                    .uniq
-                    .compact
-                    .reject { |k| children_by_key.has_key?(k) }
+    def loaded?
+      model.association(association_name).loaded?
+    end
 
-    if unloaded_keys.present?
-      child_scope.where(child_key => unloaded_keys).each do |c|
-        children_by_key[c.read_attribute(child_key)] = c
+    def belongs_to?
+      association_macro == :belongs_to
+    end
+
+    def collection?
+      association_macro == :has_many
+    end
+
+    def key
+      model.read_attribute(parent_key_column)
+    end
+
+    # Conceal the difference between singular and collection associations so
+    # that `load_children` can always `group_by` the key
+    def children
+      target = model.association(association_name).target
+
+      if collection?
+        target
+      elsif target
+        [target]
+      else
+        []
       end
     end
 
-    if child_preload_spec.present? && children_by_key.present?
-      child_preload_spec.preload(children_by_key.values)
-    end
+    def children=(targets)
+      if collection?
+        target = targets
+      else
+        if targets.size > 1
+          raise RuntimeError.new("Internal preloader error: attempted to attach multiple children to a singular association")
+        end
+        target = targets.first
+      end
 
-    unloaded_models.each do |m|
-      target = children_by_key[m.read_attribute(parent_key)]
-      association = m.association(association_reflection.name)
-      association.target = target
-      association.set_inverse_instance(target) if target
-    end
-  end
+      ActiveRecord::Base.logger.debug("attaching children to #{model.inspect}.#{association_name}: #{targets}") if DEBUG
 
-  def self.preload_multiple_association(models, association_reflection, child_scope, child_preload_spec)
-    assoc_name = association_reflection.name
-
-    unless association_reflection.macro == :has_many
-      raise "Unsupported association type #{reflection_type}"
-    end
-
-    parent_key = association_reflection.active_record_primary_key
-    child_key  = association_reflection.foreign_key
-
-    # some models may have the association already loaded
-    loaded_models, unloaded_models = models.partition { |m| m.association(assoc_name).loaded? }
-    loaded_children = loaded_models.flat_map { |m| m.association(assoc_name).target }
-
-    # Load children necessary to resolve unloaded models
-    unloaded_keys = unloaded_models.map { |m| m.read_attribute(parent_key) }
-
-    unloaded_children = child_scope.where(child_key => unloaded_keys).to_a
-    unloaded_children_by_key = unloaded_children.group_by { |c| c.read_attribute(child_key) }
-
-    preload_children = loaded_children + unloaded_children
-    if child_preload_spec.present? && preload_children.present?
-      child_preload_spec.preload(preload_children)
-    end
-
-    unloaded_models.each do |m|
-      targets = unloaded_children_by_key.fetch(m.read_attribute(parent_key), [])
-      association = m.association(association_reflection.name)
+      association = model.association(association_name)
       association.loaded!
-      association.target = targets
-      targets.each { |target| association.set_inverse_instance(target) }
+      association.target = target
+      targets.each { |t| association.set_inverse_instance(t) }
+      targets
+    end
+
+    def parent_key_column
+      case association_macro
+      when :belongs_to
+        @association_reflection.foreign_key
+      when :has_one, :has_many
+        @association_reflection.active_record_primary_key
+      else
+        raise "Unsupported association type #{@association_reflection.macro}"
+      end
     end
   end
 

@@ -22,17 +22,6 @@ class DeepPreloader::PolymorphicSpec < DeepPreloader::AbstractSpec
     specs_by_type[clazz.name]
   end
 
-  def preload(models)
-    return if models.blank?
-
-    models_by_type = models.group_by(&:class)
-    models_by_type.each do |type, type_models|
-      type_spec = for_type(type)
-      next unless type_spec
-      type_spec.preload(type_models)
-    end
-  end
-
   def merge!(other)
     case other
     when nil
