@@ -29,20 +29,6 @@ class DeepPreloader::Spec < DeepPreloader::AbstractSpec
     @association_specs = association_specs
   end
 
-  def preload(models)
-    return if models.blank?
-
-    model_class = models.first.class
-    unless models.all? { |m| m.class == model_class }
-      raise ArgumentError.new("Cannot preload mixed type models")
-    end
-
-    association_specs.each do |association_name, child_spec|
-      association_reflection = model_class.reflect_on_association(association_name)
-      DeepPreloader.preload_association(models, association_reflection, child_spec)
-    end
-  end
-
   def merge!(other)
     case other
     when nil
