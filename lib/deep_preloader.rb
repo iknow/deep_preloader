@@ -35,9 +35,12 @@ class DeepPreloader
   end
 
   class PreloadWorker
+    SENTINEL = Object.new
+
     def initialize(lock:)
       @lock     = lock
       @worklist = {}
+      @known    = {}
     end
 
     def add_associations_from_spec(models, model_class, spec)
@@ -60,36 +63,62 @@ class DeepPreloader
         context, entries = @worklist.shift
         ActiveRecord::Base.logger.debug("Preloading children in context #{context}") if DEBUG
 
-        loaded_entries, unloaded_entries = entries.partition(&:loaded?)
+        # Because context shares the key, if any entries are `belongs_to` they
+        # all are. (This wouldn't be the case if A belongs_to B via B's foreign
+        # key to C, but that's just wrong. Nonetheless we probably want to put
+        # the association direction into the context to avoid this.)
 
-        unloaded_keys = unloaded_entries.map(&:key).to_set.delete(nil)
+        ### ### DO NOT MERGE THIS ### ###
 
-        ActiveRecord::Base.logger.debug("Need to load children for following keys: #{unloaded_keys.to_a}") if DEBUG
+        belongs_to = entries.first.belongs_to?
 
-        found_children = {}
+        known_children = (@known[context] ||= {})
 
-        if unloaded_keys.present?
-          # When :belongs_to, children could be shared with already loaded
-          # entries - use what we already have.
-          loaded_entries.each do |entry|
-            next unless entry.belongs_to?
+        unloaded = {}
 
-            if entry.belongs_to? && unloaded_keys.delete?(entry.key)
-              found_children[entry.key] = entry.children
+        entries.each do |entry|
+          k = entry.key
+          if !k
+            # entry has no children: mark it as loaded.
+            entry.childless!
+          elsif entry.loaded?
+            # when we have pre-loaded pointed-to children, record them for re-use
+            if belongs_to
+              known_children[k] ||= entry.children
+            end
+          else
+            (unloaded[k] ||= []) << entry
+          end
+        end
+
+        ActiveRecord::Base.logger.debug("Need to load children for following keys: #{unloaded.keys}") if DEBUG
+
+        # Reuse any known entities that we point to
+        if belongs_to
+          unloaded.delete_if do |key, key_entries|
+            if (children = known_children.fetch(key, SENTINEL)) != SENTINEL
+              key_entries.each do |entry|
+                entry.children = children
+              end
+              true
             end
           end
-          ActiveRecord::Base.logger.debug("found loaded children for keys #{found_children.keys}") if DEBUG
         end
 
-        if unloaded_keys.present?
-          fetched_children = context.load_children(unloaded_keys.to_a, lock: @lock)
-          ActiveRecord::Base.logger.debug("fetched children for keys #{fetched_children.keys}") if DEBUG
-          found_children.merge!(fetched_children)
-        end
+        # Fetch remaining from database
+        if unloaded.present?
+          found_children = context.load_children(unloaded.keys, lock: @lock)
+          ActiveRecord::Base.logger.debug("fetched children for keys #{found_children.keys}") if DEBUG
 
-        unloaded_entries.each do |entry|
-          children = found_children.fetch(entry.key, [])
-          entry.children = children
+          unloaded.each do |key, key_entries|
+            if (children = found_children.fetch(key, SENTINEL)) != SENTINEL
+              key_entries.each do |entry|
+                entry.children = children
+              end
+            else
+              key_entries.each(&:childless!)
+            end
+          end
         end
 
         entries.each do |entry|
@@ -196,7 +225,9 @@ class DeepPreloader
     def initialize(model, association_reflection, child_spec)
       @model = model
       @association_reflection = association_reflection
+      @association = model.association(association_name)
       @child_spec = child_spec
+      @association_macro = association_reflection.macro
     end
 
     def association_name
@@ -208,15 +239,15 @@ class DeepPreloader
     end
 
     def loaded?
-      model.association(association_name).loaded?
+      @association.loaded?
     end
 
     def belongs_to?
-      association_macro == :belongs_to
+      @association_macro == :belongs_to
     end
 
     def collection?
-      association_macro == :has_many
+      @association_macro == :has_many
     end
 
     def key
@@ -226,7 +257,7 @@ class DeepPreloader
     # Conceal the difference between singular and collection associations so
     # that `load_children` can always `group_by` the key
     def children
-      target = model.association(association_name).target
+      target = @association.target
 
       if collection?
         target
@@ -249,21 +280,25 @@ class DeepPreloader
 
       ActiveRecord::Base.logger.debug("attaching children to #{model.inspect}.#{association_name}: #{targets}") if DEBUG
 
-      association = model.association(association_name)
-      association.loaded!
-      association.target = target
-      targets.each { |t| association.set_inverse_instance(t) }
+      # @association.loaded!
+      @association.target = target
+      targets.each { |t| @association.set_inverse_instance(t) }
       targets
     end
 
+    def childless!
+      ActiveRecord::Base.logger.debug("marking childless as loaded: #{model.inspect}.#{association_name}") if DEBUG
+      @association.target = (collection? ? [] : nil)
+    end
+
     def parent_key_column
-      case association_macro
+      case @association_macro
       when :belongs_to
         @association_reflection.foreign_key
       when :has_one, :has_many
         @association_reflection.active_record_primary_key
       else
-        raise "Unsupported association type #{@association_reflection.macro}"
+        raise "Unsupported association type #{@association_macro}"
       end
     end
   end
