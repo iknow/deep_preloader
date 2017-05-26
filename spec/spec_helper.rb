@@ -18,8 +18,7 @@
 require 'deep_preloader'
 require 'active_record'
 require 'database_cleaner'
-
-Dir[Bundler.root.join('spec', 'support', 'helpers', '*.rb')].each { |file| require file }
+Dir[Pathname.new(__FILE__).join('..', 'support', 'helpers', '*.rb')].each { |file| require file }
 
 ActiveRecord::Base.establish_connection adapter: "sqlite3", database: ":memory:"
 
