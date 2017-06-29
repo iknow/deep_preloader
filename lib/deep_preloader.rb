@@ -183,7 +183,7 @@ class DeepPreloader
       end
 
       if lock
-        scope = scope.lock(lock)
+        scope = scope.order(:id).lock(lock)
       end
 
       scope.where(child_key_column => keys).group_by { |c| c.read_attribute(child_key_column) }
