@@ -5,7 +5,7 @@ rvm:
   - 2.4
   - 2.5
 gemfile:
-  - gemfiles/activerecord_5_0.gemfile
   - gemfiles/activerecord_5_1.gemfile
+  - gemfiles/activerecord_5_2.gemfile
 notifications:
   email: false
