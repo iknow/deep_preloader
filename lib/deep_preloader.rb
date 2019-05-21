@@ -58,13 +58,13 @@ class DeepPreloader
     def run!
       while(@worklist.present?)
         context, entries = @worklist.shift
-        ActiveRecord::Base.logger.debug("Preloading children in context #{context}") if DEBUG
+        ActiveRecord::Base.logger&.debug("Preloading children in context #{context}") if DEBUG
 
         loaded_entries, unloaded_entries = entries.partition(&:loaded?)
 
         unloaded_keys = unloaded_entries.map(&:key).to_set.delete(nil)
 
-        ActiveRecord::Base.logger.debug("Need to load children for following keys: #{unloaded_keys.to_a}") if DEBUG
+        ActiveRecord::Base.logger&.debug("Need to load children for following keys: #{unloaded_keys.to_a}") if DEBUG
 
         found_children = {}
 
@@ -78,12 +78,12 @@ class DeepPreloader
               found_children[entry.key] = entry.children
             end
           end
-          ActiveRecord::Base.logger.debug("found loaded children for keys #{found_children.keys}") if DEBUG
+          ActiveRecord::Base.logger&.debug("found loaded children for keys #{found_children.keys}") if DEBUG
         end
 
         if unloaded_keys.present?
           fetched_children = context.load_children(unloaded_keys.to_a, lock: @lock)
-          ActiveRecord::Base.logger.debug("fetched children for keys #{fetched_children.keys}") if DEBUG
+          ActiveRecord::Base.logger&.debug("fetched children for keys #{fetched_children.keys}") if DEBUG
           found_children.merge!(fetched_children)
         end
 
@@ -247,7 +247,7 @@ class DeepPreloader
         target = targets.first
       end
 
-      ActiveRecord::Base.logger.debug("attaching children to #{model.inspect}.#{association_name}: #{targets}") if DEBUG
+      ActiveRecord::Base.logger&.debug("attaching children to #{model.inspect}.#{association_name}: #{targets}") if DEBUG
 
       association = model.association(association_name)
       association.loaded!
