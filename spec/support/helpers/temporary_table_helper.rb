@@ -2,13 +2,13 @@ module TemporaryTableHelper
   extend ActiveSupport::Concern
 
   class_methods do
-    def with_temporary_table(name, columns = ->(t){}, create_table: true, &block)
+    def with_temporary_table(name, columns = ->(t){}, superclass: -> { ActiveRecord::Base }, create_table: true, &block)
       table_builder = nil
 
       before(:context) do
         ActiveRecord::Base.connection.schema_cache.clear!
         ActiveSupport::Dependencies::Reference.clear!
-        table_builder = TableBuilder.new(name, columns, create_table: create_table, &block)
+        table_builder = TableBuilder.new(name, columns, superclass: superclass.(), create_table: create_table, &block)
       end
 
       after(:context) do
@@ -18,8 +18,9 @@ module TemporaryTableHelper
   end
 
   class TableBuilder
-    def initialize(name, columns, create_table: true, &block)
+    def initialize(name, columns, superclass:, create_table:, &block)
       @create_table = create_table
+      @superclass = superclass
 
       model_name = name.to_s.classify
 
@@ -29,8 +30,9 @@ module TemporaryTableHelper
       end
 
       @model_class =
-        Class.new(ActiveRecord::Base) do |c|
+        Class.new(@superclass) do |_c|
           raise "Model already defined: #{model_name}" if Object.const_defined?(model_name, false)
+
           Object.const_set(model_name, self)
           self.primary_key = :id
           class_eval(&block) if block_given?

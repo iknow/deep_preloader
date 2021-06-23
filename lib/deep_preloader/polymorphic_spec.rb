@@ -18,6 +18,10 @@ class DeepPreloader::PolymorphicSpec < DeepPreloader::AbstractSpec
     @specs_by_type = specs_by_type
   end
 
+  def polymorphic?
+    true
+  end
+
   def for_type(clazz)
     specs_by_type[clazz.name]
   end
