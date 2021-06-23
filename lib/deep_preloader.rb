@@ -56,7 +56,7 @@ class DeepPreloader
     end
 
     def run!
-      while(@worklist.present?)
+      while @worklist.present?
         context, entries = @worklist.shift
         ActiveRecord::Base.logger&.debug("Preloading children in context #{context}") if DEBUG
 
@@ -242,8 +242,9 @@ class DeepPreloader
         target = targets
       else
         if targets.size > 1
-          raise RuntimeError.new("Internal preloader error: attempted to attach multiple children to a singular association")
+          raise RuntimeError.new('Internal preloader error: attempted to attach multiple children to a singular association')
         end
+
         target = targets.first
       end
 
@@ -253,7 +254,6 @@ class DeepPreloader
       association.loaded!
       association.target = target
       targets.each { |t| association.set_inverse_instance(t) }
-      targets
     end
 
     def parent_key_column
@@ -267,5 +267,4 @@ class DeepPreloader
       end
     end
   end
-
 end
