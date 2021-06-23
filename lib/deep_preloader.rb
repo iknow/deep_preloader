@@ -12,23 +12,7 @@ class DeepPreloader
     worker = PreloadWorker.new(lock: lock)
     spec = Spec.parse(spec) unless spec.is_a?(AbstractSpec)
 
-    models_by_class = Array.wrap(models).group_by(&:class)
-
-    case spec
-    when Spec
-      unless models_by_class.size == 1
-        raise ArgumentError.new("Provided multiple model types to non-polymorphic preload spec")
-      end
-
-      model_class, models = models_by_class.first
-      worker.add_associations_from_spec(models, model_class, spec)
-    when PolymorphicSpec
-      models_by_class.each do |model_class, models|
-        model_spec = spec.for_type(model_class)
-        next unless model_spec
-        worker.add_associations_from_spec(models, model_class, model_spec)
-      end
-    end
+    worker.add_associations_from_spec(models, spec)
 
     worker.run!
     models
@@ -40,17 +24,43 @@ class DeepPreloader
       @worklist = {}
     end
 
-    def add_associations_from_spec(models, model_class, spec)
-      spec.association_specs.each do |association_name, child_spec|
-        association_reflection = model_class.reflect_on_association(association_name)
-        if association_reflection.nil?
-          raise ArgumentError.new("Preloading error: couldn't find association #{association_name} on model class #{model_class.name}")
+    def add_associations_from_spec(models, spec)
+      models = Array.wrap(models)
+
+      # A polymorphic spec expects models of several types, and defines which
+      # associations to preload for each of them.
+      if spec.polymorphic?
+        # We expect models to be of different types, and to have different subspecs for each.
+        models_by_class = models.group_by(&:class)
+
+        models_by_class.each do |model_class, class_models|
+          model_spec = spec.for_type(model_class)
+          next unless model_spec
+
+          add_associations_from_spec(class_models, model_spec)
+        end
+      else
+        # A non-polymorphic spec implies that the models are all of the same type
+        model_class = models.first.class
+
+        unless models.all? { |m| m.is_a?(model_class) }
+          raise ArgumentError.new('Provided multiple model types to a non-polymorphic preload spec')
         end
 
-        if association_reflection.polymorphic?
-          add_polymorphic_association(models, association_reflection, child_spec)
-        else
-          add_association(models, association_reflection, child_spec)
+        spec.association_specs.each do |association_name, child_spec|
+          association_reflection = model_class.reflect_on_association(association_name)
+          if association_reflection.nil?
+            raise ArgumentError.new("Preloading error: couldn't find association #{association_name} on model class #{model_class.name}")
+          end
+
+          # A polymorphic association links to many different model types
+          # (discriminated in the referrer), so must be loaded separately per
+          # target model type.
+          if association_reflection.polymorphic?
+            add_polymorphic_association(models, association_reflection, child_spec)
+          else
+            add_association(models, association_reflection, child_spec)
+          end
         end
       end
     end
@@ -96,12 +106,10 @@ class DeepPreloader
           children = entry.children
           child_spec = entry.child_spec
           next unless child_spec && children.present?
-          child_class = children.first.class # children of a given parent are all of the same type
-          add_associations_from_spec(children, child_class, child_spec)
+
+          add_associations_from_spec(children, child_spec)
         end
-
       end
-
     end
 
     private

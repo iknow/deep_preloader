@@ -235,6 +235,64 @@ RSpec.describe DeepPreloader do
     end
   end
 
+  context 'with a has_many STI relationship' do
+    with_temporary_table(:parent) do
+      has_many :pets, inverse_of: :parent
+    end
+
+    with_temporary_table(:pet, ->(t) { t.string :type; t.references :parent; t.references :cat_toy; t.references :dog_toy }) do
+      belongs_to :parent, inverse_of: :pets
+    end
+
+    with_temporary_table(:cat, superclass: -> { Pet }, create_table: false) do
+      belongs_to :cat_toy
+    end
+
+    with_temporary_table(:dog, superclass: -> { Pet }, create_table: false) do
+      belongs_to :dog_toy
+    end
+
+    with_temporary_table(:cat_toy) do
+      has_one :cat, inverse_of: :cat_toy
+    end
+
+    with_temporary_table(:dog_toy) do
+      has_one :dog, inverse_of: :dog_toy
+    end
+
+    let(:parent) do
+      Parent.create!(pets: pets)
+    end
+
+    let(:pets) do
+      [Dog.create(dog_toy: DogToy.new), Cat.create(cat_toy: CatToy.new)]
+    end
+
+    before(:each) do
+      parent.reload
+    end
+
+    it 'loads the children' do
+      DeepPreloader.preload(parent, :pets)
+      expect(parent).to have_loaded(:pets).as(pets)
+    end
+
+    it 'loads polymorphically through the children' do
+      DeepPreloader.preload(parent, :pets => DeepPreloader::PolymorphicSpec.parse(Dog.name => :dog_toy, Cat.name => :cat_toy))
+      expect(parent).to have_loaded(:pets).as(pets)
+      expect(pets[0]).to have_loaded(:parent).as(parent)
+      expect(pets[1]).to have_loaded(:parent).as(parent)
+
+      parent_pets = parent.pets.sort_by(&:id)
+
+      expect(parent_pets[0]).to have_loaded(:dog_toy).as(pets[0].dog_toy)
+      expect(parent_pets[1]).to have_loaded(:cat_toy).as(pets[1].cat_toy)
+
+      expect(parent_pets[0].dog_toy).to have_loaded(:dog).as(pets[0])
+      expect(parent_pets[1].cat_toy).to have_loaded(:cat).as(pets[1])
+    end
+  end
+
   context 'with a polymorphic relationship' do
     with_temporary_table(:parent, ->(t) { t.references :child; t.string :child_type }) do
       belongs_to :child, polymorphic: true, inverse_of: :parent
