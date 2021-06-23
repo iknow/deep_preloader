@@ -278,7 +278,7 @@ RSpec.describe DeepPreloader do
     end
 
     it 'loads polymorphically through the children' do
-      DeepPreloader.preload(parent, :pets => DeepPreloader::PolymorphicSpec.parse(Dog.name => :dog_toy, Cat.name => :cat_toy))
+      DeepPreloader.preload(parent, { :pets => DeepPreloader::PolymorphicSpec.parse(Dog.name => :dog_toy, Cat.name => :cat_toy) })
       expect(parent).to have_loaded(:pets).as(pets)
       expect(pets[0]).to have_loaded(:parent).as(parent)
       expect(pets[1]).to have_loaded(:parent).as(parent)
