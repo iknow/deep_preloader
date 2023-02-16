@@ -7,7 +7,9 @@ module TemporaryTableHelper
 
       before(:context) do
         ActiveRecord::Base.connection.schema_cache.clear!
-        ActiveSupport::Dependencies::Reference.clear!
+        if ActiveSupport::VERSION::MAJOR < 7
+          ActiveSupport::Dependencies::Reference.clear!
+        end
         table_builder = TableBuilder.new(name, columns, superclass: superclass.(), create_table: create_table, &block)
       end
 
