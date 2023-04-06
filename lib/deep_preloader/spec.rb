@@ -11,11 +11,11 @@ class DeepPreloader::Spec < DeepPreloader::AbstractSpec
       end
     when Hash
       assoc_specs = data.each_with_object({}) do |(k, v), h|
-        h[k.to_sym] = parse(v)
+        h[k.to_s] = parse(v)
       end
       self.new(assoc_specs)
     when String, Symbol
-      self.new({ data.to_sym => nil })
+      self.new({ data.to_s => nil })
     when DeepPreloader::AbstractSpec
       data
     when nil
@@ -26,7 +26,7 @@ class DeepPreloader::Spec < DeepPreloader::AbstractSpec
   end
 
   def initialize(association_specs = {})
-    @association_specs = association_specs
+    @association_specs = association_specs.transform_keys(&:to_s)
   end
 
   def merge!(other)
