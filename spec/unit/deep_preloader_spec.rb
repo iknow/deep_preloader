@@ -29,7 +29,7 @@ RSpec.describe DeepPreloader do
 
   it 'can parse a hash spec' do
     spec          = { a: [:b, { c: :d, e: nil }] }
-    expected_spec = DeepPreloader::Spec.new(a: DeepPreloader::Spec.new(b: nil, c: DeepPreloader::Spec.new(d: nil), e: nil))
+    expected_spec = DeepPreloader::Spec.new('a' => DeepPreloader::Spec.new('b' => nil, 'c' => DeepPreloader::Spec.new('d' => nil), 'e' => nil))
 
     expect(DeepPreloader::Spec.parse(spec)).to eq(expected_spec)
   end
@@ -38,8 +38,8 @@ RSpec.describe DeepPreloader do
     with_temporary_table(:model)
 
     it 'can parse a polymorphic hash spec' do
-      parsed_spec   = DeepPreloader::Spec.parse(a: DeepPreloader::PolymorphicSpec.parse('Model' => { b: :c }))
-      expected_spec = DeepPreloader::Spec.new(a: DeepPreloader::PolymorphicSpec.new('Model' => DeepPreloader::Spec.new(b: DeepPreloader::Spec.new(c: nil))))
+      parsed_spec   = DeepPreloader::Spec.parse(a: DeepPreloader::PolymorphicSpec.parse('Model': { b: :c }))
+      expected_spec = DeepPreloader::Spec.new('a' => DeepPreloader::PolymorphicSpec.new('Model' => DeepPreloader::Spec.new('b' => DeepPreloader::Spec.new('c' => nil))))
 
       expect(parsed_spec).to eq(expected_spec)
     end

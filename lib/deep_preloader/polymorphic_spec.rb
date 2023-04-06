@@ -15,7 +15,7 @@ class DeepPreloader::PolymorphicSpec < DeepPreloader::AbstractSpec
   end
 
   def initialize(specs_by_type = {})
-    @specs_by_type = specs_by_type
+    @specs_by_type = specs_by_type.transform_keys(&:to_s)
   end
 
   def polymorphic?
