@@ -34,6 +34,18 @@ RSpec.describe DeepPreloader do
     expect(DeepPreloader::Spec.parse(spec)).to eq(expected_spec)
   end
 
+  it 'can merge specs' do
+    a = DeepPreloader::Spec.parse(a: :b)
+    b = DeepPreloader::Spec.parse(a: :c)
+    result = DeepPreloader::Spec.new.merge!(a).merge!(b)
+
+    # The result should contain each of the merged specs and the merged specs
+    # themselves should not be altered
+    expect(result).to eq(DeepPreloader::Spec.parse(a: [:b, :c]))
+    expect(a).to eq(DeepPreloader::Spec.parse(a: :b))
+    expect(b).to eq(DeepPreloader::Spec.parse(a: :c))
+  end
+
   context 'with a test model' do
     with_temporary_table(:model)
 

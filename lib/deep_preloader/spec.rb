@@ -38,7 +38,7 @@ class DeepPreloader::Spec < DeepPreloader::AbstractSpec
         if association_specs[k]
           association_specs[k].merge!(v)
         else
-          association_specs[k] = v
+          association_specs[k] = v.deep_dup
         end
       end
     else
@@ -56,6 +56,10 @@ class DeepPreloader::Spec < DeepPreloader::AbstractSpec
   end
 
   alias eql? ==
+
+  def deep_dup
+    self.class.new(association_specs.deep_dup)
+  end
 
   def inspect
     "Spec#{association_specs.inspect}"
