@@ -35,7 +35,7 @@ class DeepPreloader::PolymorphicSpec < DeepPreloader::AbstractSpec
         if specs_by_type[k]
           specs_by_type[k].merge!(v)
         else
-          specs_by_type[k] = v
+          specs_by_type[k] = v.deep_dup
         end
       end
     else
@@ -53,6 +53,10 @@ class DeepPreloader::PolymorphicSpec < DeepPreloader::AbstractSpec
   end
 
   alias eql? ==
+
+  def deep_dup
+    self.class.new(specs_by_type.deep_dup)
+  end
 
   def inspect
     "PolySpec#{specs_by_type.inspect}"
